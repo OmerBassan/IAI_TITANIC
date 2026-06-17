@@ -14,9 +14,10 @@ env/
 kaggle.json
 .kaggle/
 
-# Data: ignore full datasets, keep the committed sample
+# Data: ignore full datasets, keep the committed sample + train.csv
 data/*.csv
 !data/sample.csv
+!data/train.csv
 
 # Model artifacts
 models/
