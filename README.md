@@ -148,7 +148,7 @@ features present. Age is imputed via median; Cabin is dropped.
 ![Sex × Pclass survival rate](docs/eda_sex_pclass.png)
 ![AgeBand × Pclass survival rate](docs/eda_ageband_pclass.png)
 
-## Streamlit App
+## Design notes
 
 - **Architecture** — The dominant signal is the Sex×Pclass interaction plus a
   non-linear child effect. A flat MLP under-fits these, so the model uses
@@ -161,7 +161,7 @@ features present. Age is imputed via median; Cabin is dropped.
 - **No leakage** — the preprocessor is fit on the training split only and
   persisted alongside the weights.
 
-## Screenshots
+## Streamlit App
 
 **Interactive prediction & explanation** — The Streamlit app loads the trained
 model and preprocessor, accepts a CSV or single-passenger form, and shows:
