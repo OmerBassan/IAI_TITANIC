@@ -46,8 +46,8 @@ Decision threshold tuned by macro-F1 search (0.56). Hyperparameters come from
 | [notebooks/colab_train.ipynb](notebooks/colab_train.ipynb) | GPU training on Colab |
 
 Training artifacts (`model.pt`, `preprocessor.joblib`, `metadata.json`,
-`history.json`) are written to `checkpoints/` by default and to `artifacts/` for
-the app (`train.py --out-dir artifacts`).
+`history.json`) are written to `artifacts/` by default (the directory `ds_app.py`
+reads from). Override with `--out-dir <path>`.
 
 ## Setup
 
@@ -75,9 +75,12 @@ so the repo runs without Kaggle credentials.
 python fetch_data.py   # downloads data/train.csv (skips if present)
 ```
 
-The fetch needs Kaggle auth (`~/.kaggle/kaggle.json`, `KAGGLE_USERNAME` +
-`KAGGLE_KEY`, or `KAGGLE_API_TOKEN`) **and** acceptance of the competition rules
-at <https://www.kaggle.com/competitions/titanic/rules> (otherwise 403).
+The fetch needs Kaggle auth **and** acceptance of the competition rules at
+<https://www.kaggle.com/competitions/titanic/rules> (otherwise 403).
+
+Credentials are loaded from (in order): `.env` in the project root → shell env
+vars → `~/.kaggle/kaggle.json`. Copy `.env.example` to `.env` and fill in
+`KAGGLE_USERNAME` + `KAGGLE_KEY` (or `KAGGLE_API_TOKEN`).
 
 ## Train
 

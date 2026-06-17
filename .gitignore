@@ -9,7 +9,8 @@ __pycache__/
 venv/
 env/
 
-# Kaggle credentials (never commit)
+# Credentials (never commit)
+.env
 kaggle.json
 .kaggle/
 
@@ -30,3 +31,6 @@ artifacts/
 .DS_Store
 .vscode/
 .idea/
+
+# Local scratch / dev files not meant for the repo
+ignore/
