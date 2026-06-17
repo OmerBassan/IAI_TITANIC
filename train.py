@@ -34,11 +34,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
+from src.evaluation import compute_metrics, find_best_threshold
 from src.model import TabularResNet
 from src.preprocessing import (
     build_preprocessor,
@@ -60,8 +60,9 @@ class TrainConfig:
         epochs: Maximum number of training epochs.
         patience: Early-stopping patience (epochs without val-AUC improvement).
         batch_size: Mini-batch size.
-        lr: Adam learning rate.
-        weight_decay: Adam L2 regularisation.
+        lr: AdamW learning rate.
+        weight_decay: AdamW decoupled weight-decay (strong, to penalise large
+            weights on the small ~900-row dataset).
         hidden_dim: Residual width of the model.
         n_blocks: Number of residual blocks.
         dropout: Dropout probability.
@@ -77,20 +78,54 @@ class TrainConfig:
     """
 
     data_path: str = "data/train.csv"
-    out_dir: str = "checkpoints"
+    out_dir: str = "artifacts"
     splits_path: str | None = None
     preprocessor_path: str | None = None
     epochs: int = 200
     patience: int = 20
+    # Plain, sane fallbacks. The *tuned* hyperparameters live in best_params.json
+    # (produced by tuning.py, committed to Git) and override these at startup —
+    # see load_best_params(). weight_decay is not searched, so it stays here.
     batch_size: int = 32
     lr: float = 1e-3
-    weight_decay: float = 1e-4
-    hidden_dim: int = 64
-    n_blocks: int = 3
-    dropout: float = 0.3
+    weight_decay: float = 1e-2
+    hidden_dim: int = 32
+    n_blocks: int = 2
+    dropout: float = 0.2
     val_size: float = 0.2
     seed: int = 42
     device: str = "auto"
+
+
+_TUNABLE_KEYS = ("lr", "dropout", "batch_size", "hidden_dim", "n_blocks")
+
+
+def load_best_params(path: str | Path = "best_params.json") -> dict[str, object]:
+    """Load tuned hyperparameters written by ``tuning.py``, if present.
+
+    Lets training stay decoupled from the (expensive, occasional) Optuna search:
+    ``tuning.py`` writes ``best_params.json``, this reads it. Only the keys the
+    study actually searches (:data:`_TUNABLE_KEYS`) are returned, so a stray
+    field in the file can never silently change unrelated training behaviour.
+
+    Args:
+        path: Path to the params JSON. A missing file is not an error — it just
+            means training falls back to the :class:`TrainConfig` defaults.
+
+    Returns:
+        A dict of recognised hyperparameter overrides (possibly empty).
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"[warn] could not read {path} ({exc}); using default hyperparameters.")
+        return {}
+    # Support both a flat dict and the {"best_params": {...}} provenance wrapper.
+    params = payload.get("best_params", payload)
+    return {k: params[k] for k in _TUNABLE_KEYS if k in params}
 
 
 def set_seed(seed: int) -> None:
@@ -145,17 +180,6 @@ def _to_loader(
 def _evaluate(
     model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device
 ) -> dict[str, float]:
-    """Compute loss and classification metrics over a loader.
-
-    Args:
-        model: The model to evaluate.
-        loader: DataLoader yielding ``(features, labels)``.
-        criterion: Loss function (expects logits).
-        device: Device to run on.
-
-    Returns:
-        Dict with ``loss``, ``accuracy``, ``f1`` and ``roc_auc``.
-    """
     model.eval()
     logits_all, y_all, loss_sum, n = [], [], 0.0, 0
     for xb, yb in loader:
@@ -165,17 +189,16 @@ def _evaluate(
         n += len(yb)
         logits_all.append(logits.cpu())
         y_all.append(yb.cpu())
+        
     logits = torch.cat(logits_all).numpy()
     y_true = torch.cat(y_all).numpy()
     proba = 1.0 / (1.0 + np.exp(-logits))
-    preds = (proba >= 0.5).astype(int)
-    return {
-        "loss": loss_sum / max(n, 1),
-        "accuracy": float(accuracy_score(y_true, preds)),
-        "f1": float(f1_score(y_true, preds, zero_division=0)),
-        "roc_auc": float(roc_auc_score(y_true, proba)),
-    }
 
+    # דינמי threshold search + metrics via the shared evaluation module, so the
+    # numbers reported here match exactly what ds_app.py shows on the same data.
+    best_thresh, _ = find_best_threshold(y_true, proba)
+    metrics = compute_metrics(y_true, proba, threshold=best_thresh)
+    return {"loss": loss_sum / max(n, 1), **metrics, "best_thresh": best_thresh}
 
 def train(**overrides: object) -> dict[str, object]:
     """Run end-to-end training and persist the best artifacts.
@@ -203,7 +226,30 @@ def train(**overrides: object) -> dict[str, object]:
         X_val, y_val = npz["X_val"], npz["y_val"]
         preprocessor = load_preprocessor(cfg.preprocessor_path)
         feature_names = get_feature_names(preprocessor)
-        print(f"[data] loaded precomputed splits from {cfg.splits_path}")
+        # Guardrail: a cached splits.npz silently goes stale when the
+        # preprocessing code changes (e.g. a new feature is added) but the cache
+        # is not regenerated. Compare the engineered schema frozen into the cache
+        # against the one the *current* code produces, and fail loudly on drift.
+        live = list(
+            build_preprocessor().named_steps["engineer"].get_feature_names_out()
+        )
+        if "engineered_features" in npz:
+            cached = [str(f) for f in npz["engineered_features"]]
+            if cached != live:
+                added = sorted(set(live) - set(cached))
+                removed = sorted(set(cached) - set(live))
+                raise ValueError(
+                    "Stale cache: splits.npz was built with a different "
+                    "preprocessing schema than the current code "
+                    f"(added={added or 'none'}, removed={removed or 'none'}). "
+                    "Regenerate with `python prepare_data.py` "
+                    "(and re-upload it if on Colab)."
+                )
+        else:
+            print("[warn] cache predates schema tracking; cannot verify it is "
+                  "current. Regenerate with prepare_data.py if unsure.")
+        print(f"[data] loaded precomputed splits from {cfg.splits_path} "
+              f"({X_train.shape[1]} features)")
     else:
         raw = load_raw(cfg.data_path)
         X_df, y_ser = split_xy(raw)
@@ -237,18 +283,25 @@ def train(**overrides: object) -> dict[str, object]:
     neg = float(len(y_train) - pos)
     pos_weight = torch.tensor([neg / max(pos, 1.0)], device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = torch.optim.Adam(
+    # AdamW decouples weight decay from the gradient update -> cleaner, stronger
+    # L2 regularisation than vanilla Adam, which matters on this tiny dataset.
+    optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
     )
 
     print(f"[setup] device={device} | train={len(y_train)} val={len(y_val)} "
           f"| features={X_train.shape[1]}")
 
-    best_auc = -1.0
+    best_val_loss = float("inf")
     best_epoch = -1
     best_metrics: dict[str, float] = {}
     epochs_no_improve = 0
     ckpt_path = out_dir / "model.pt"
+    # Per-epoch history -> learning curves (plotted by src.evaluation, reused
+    # in the Streamlit app). Persisted to history.json alongside the weights.
+    history: dict[str, list[float]] = {
+        "train_loss": [], "val_loss": [], "val_accuracy": [], "val_roc_auc": []
+    }
 
     for epoch in range(1, cfg.epochs + 1):
         model.train()
@@ -269,15 +322,22 @@ def train(**overrides: object) -> dict[str, object]:
             f"f1 {val['f1']:.3f} | auc {val['roc_auc']:.3f}"
         )
 
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val["loss"])
+        history["val_accuracy"].append(val["accuracy"])
+        history["val_roc_auc"].append(val["roc_auc"])
+
         writer.add_scalar("Loss/Train", train_loss, epoch)
         writer.add_scalar("Loss/Validation", val['loss'], epoch)
         writer.add_scalar("Metrics/Accuracy", val['accuracy'], epoch)
         writer.add_scalar("Metrics/ROC_AUC", val['roc_auc'], epoch)
 
 
-        # best checkpoint selected on validation ROC-AUC
-        if val["roc_auc"] > best_auc:
-            best_auc = val["roc_auc"]
+        # best checkpoint + early stopping both keyed off validation loss:
+        # we save while val_loss keeps falling and stop once it starts rising
+        # (the classic overfitting signal, expected early on this small set).
+        if val["loss"] < best_val_loss:
+            best_val_loss = val["loss"]
             best_epoch = epoch
             best_metrics = val
             epochs_no_improve = 0
@@ -296,7 +356,7 @@ def train(**overrides: object) -> dict[str, object]:
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= cfg.patience:
-                print(f"[early-stop] no val-AUC gain for {cfg.patience} epochs.")
+                print(f"[early-stop] no val-loss improvement for {cfg.patience} epochs.")
                 break
 
     # --- persist preprocessor + metadata ---
@@ -310,6 +370,8 @@ def train(**overrides: object) -> dict[str, object]:
     }
     meta_path = out_dir / "metadata.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    history_path = out_dir / "history.json"
+    history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
     print(
         f"\n[done] best epoch {best_epoch} | "
@@ -317,10 +379,11 @@ def train(**overrides: object) -> dict[str, object]:
         f"f1 {best_metrics.get('f1', float('nan')):.3f} | "
         f"auc {best_metrics.get('roc_auc', float('nan')):.3f}"
     )
-    print(f"[saved] {ckpt_path}\n[saved] {pre_path}\n[saved] {meta_path}")
+    print(f"[saved] {ckpt_path}\n[saved] {pre_path}\n[saved] {meta_path}"
+          f"\n[saved] {history_path}")
 
     writer.close()
-    
+
     return {
         "best_metrics": best_metrics,
         "model_path": str(ckpt_path),
@@ -335,6 +398,14 @@ def _parse_args() -> TrainConfig:
     Returns:
         The populated config.
     """
+    # Precedence: explicit CLI flag > best_params.json > TrainConfig default.
+    # The tuned values become the argparse defaults, so an un-passed flag picks
+    # them up while a passed flag still overrides.
+    tuned = load_best_params()
+    if tuned:
+        print(f"[params] loaded tuned hyperparameters from best_params.json: {tuned}")
+    d = lambda key: tuned.get(key, getattr(TrainConfig, key))  # noqa: E731
+
     p = argparse.ArgumentParser(description="Train the Titanic survival model.")
     p.add_argument("--data-path", default=TrainConfig.data_path)
     p.add_argument("--out-dir", default=TrainConfig.out_dir)
@@ -342,12 +413,12 @@ def _parse_args() -> TrainConfig:
     p.add_argument("--preprocessor-path", default=TrainConfig.preprocessor_path)
     p.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     p.add_argument("--patience", type=int, default=TrainConfig.patience)
-    p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    p.add_argument("--lr", type=float, default=TrainConfig.lr)
+    p.add_argument("--batch-size", type=int, default=d("batch_size"))
+    p.add_argument("--lr", type=float, default=d("lr"))
     p.add_argument("--weight-decay", type=float, default=TrainConfig.weight_decay)
-    p.add_argument("--hidden-dim", type=int, default=TrainConfig.hidden_dim)
-    p.add_argument("--n-blocks", type=int, default=TrainConfig.n_blocks)
-    p.add_argument("--dropout", type=float, default=TrainConfig.dropout)
+    p.add_argument("--hidden-dim", type=int, default=d("hidden_dim"))
+    p.add_argument("--n-blocks", type=int, default=d("n_blocks"))
+    p.add_argument("--dropout", type=float, default=d("dropout"))
     p.add_argument("--val-size", type=float, default=TrainConfig.val_size)
     p.add_argument("--seed", type=int, default=TrainConfig.seed)
     p.add_argument("--device", default=TrainConfig.device, choices=["auto", "cuda", "cpu"])

@@ -1,0 +1,15 @@
+{
+  "best_params": {
+    "lr": 0.0001834579591390578,
+    "dropout": 0.18326425481671912,
+    "batch_size": 16,
+    "hidden_dim": 16,
+    "n_blocks": 3
+  },
+  "best_value_roc_auc": 0.8845849802371543,
+  "metric": "val_roc_auc",
+  "n_trials": 20,
+  "seed": 42,
+  "data_path": "data/train.csv",
+  "source": "Optuna 20-trial study, best trial #15 (see ignore/optuna_summary.md)"
+}

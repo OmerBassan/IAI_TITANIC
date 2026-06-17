@@ -55,6 +55,32 @@ class ResidualBlock(nn.Module):
         return x + self.block(x)
 
 
+class FeatureAttentionGate(nn.Module):
+    """Dynamic feature selection gate inspired by TabNet.
+    
+    Learns to output a mask [0, 1] that dynamically scales the raw input features
+    based on their interactions, acting as automated Feature Crossing.
+    """
+
+    def __init__(self, in_features: int) -> None:
+        super().__init__()
+        # צוואר בקבוק קטן כדי ללמוד קשרים בין העמודות
+        self.gate = nn.Sequential(
+            nn.Linear(in_features, in_features),
+            nn.LayerNorm(in_features),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_features, in_features),
+            nn.Sigmoid() # מכווץ את משקולות ה-Attention בין 0 ל-1
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            Gated features, and the attention mask itself (for explainability).
+        """
+        mask = self.gate(x)
+        return x * mask, mask
+
 class TabularResNet(nn.Module):
     """Small ResNet-style classifier for the Titanic feature matrix.
 
@@ -73,12 +99,16 @@ class TabularResNet(nn.Module):
     def __init__(
         self,
         in_features: int,
-        hidden_dim: int = 64,
-        n_blocks: int = 3,
+        hidden_dim: int = 32,
+        n_blocks: int = 1,
         dropout: float = 0.3,
     ) -> None:
         super().__init__()
         self.in_features = in_features
+        
+        # 1. הוספת שער ה-Attention החדש
+        self.feature_attention = FeatureAttentionGate(in_features)
+        
         self.stem = nn.Sequential(
             nn.Linear(in_features, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
@@ -91,14 +121,10 @@ class TabularResNet(nn.Module):
         self.head = nn.Linear(hidden_dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x: Feature tensor of shape ``(batch, in_features)``.
-
-        Returns:
-            Logit tensor of shape ``(batch,)`` (squeezed).
-        """
+        """Forward pass."""
+        # 2. הפעלת מנגנון תשומת הלב ושמירת המשקולות לצורך הסברתיות
+        x, self.attention_weights = self.feature_attention(x)
+        
         x = self.stem(x)
         x = self.blocks(x)
         return self.head(x).squeeze(-1)

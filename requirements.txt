@@ -1,5 +1,6 @@
 # Core ML
 torch>=2.2
+optuna>=3.6
 numpy>=1.26
 pandas>=2.1
 scikit-learn>=1.4

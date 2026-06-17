@@ -14,8 +14,9 @@ The concrete decisions implemented here come straight from the EDA notebook
 * Fill ``Embarked`` with its mode; fill missing ``Fare`` with the class median.
 * Replace the ~77%-missing ``Cabin`` with a binary ``HasCabin`` flag.
 * ``log1p(Fare)`` to tame the right skew, then standardise alongside ``Age``.
-* Engineer ``Title``, ``FamilySize`` and ``IsAlone``; drop the raw free-text /
-  identifier columns (``Name``, ``Ticket``, ``PassengerId``, ``Cabin``).
+* Engineer ``Title``, ``FamilySize``, ``IsAlone``, and ``IsChild`` (Age < 10);
+  drop the raw free-text / identifier columns (``Name``, ``Ticket``,
+  ``PassengerId``, ``Cabin``).
 * One-hot encode the categoricals (``Sex``, ``Embarked``, ``Title``,
   ``Pclass``); keep a single family-size representation to avoid redundancy.
 """
@@ -53,7 +54,7 @@ _TITLE_PATTERN = re.compile(r",\s*([^.]+)\.")
 # downstream ColumnTransformer should treat them.
 _NUMERIC_FEATURES = ["Age", "FareLog", "FamilySize"]
 _CATEGORICAL_FEATURES = ["Sex", "Embarked", "Title", "Pclass"]
-_BINARY_FEATURES = ["IsAlone", "HasCabin"]
+_BINARY_FEATURES = ["IsAlone", "HasCabin", "IsChild"]
 
 
 def _extract_title(name: object) -> str:
@@ -152,6 +153,9 @@ class TitanicFeatureEngineer(BaseEstimator, TransformerMixin):
             )
 
         df["Age"] = df.apply(_impute_age, axis=1)
+
+        # --- child effect: Age < 10 (captured by "women and children first") ---
+        df["IsChild"] = (df["Age"] < 10).astype(int)
 
         # --- embarked: mode ---
         df["Embarked"] = df.get("Embarked", self.embarked_mode_).fillna(self.embarked_mode_)

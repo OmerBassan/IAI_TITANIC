@@ -64,6 +64,11 @@ def prepare(
     X_train = preprocessor.fit_transform(X_train_df, y_train)  # FIT ON TRAIN ONLY
     X_val = preprocessor.transform(X_val_df)
 
+    # Freeze the engineered feature list (pre one-hot) into the cache so train.py
+    # can detect a stale cache after the preprocessing code changes. This list is
+    # static (no fit needed), so it captures the schema at generation time.
+    engineered = preprocessor.named_steps["engineer"].get_feature_names_out()
+
     splits_path = out / "splits.npz"
     np.savez_compressed(
         splits_path,
@@ -71,6 +76,7 @@ def prepare(
         y_train=y_train.astype("float32"),
         X_val=X_val.astype("float32"),
         y_val=y_val.astype("float32"),
+        engineered_features=np.asarray(engineered, dtype=object),
     )
     pre_path = save_preprocessor(preprocessor, out / "preprocessor.joblib")
 
