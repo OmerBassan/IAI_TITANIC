@@ -35,3 +35,4 @@ artifacts/
 
 # Local scratch / dev files not meant for the repo
 ignore/
+CLAUDE.md
