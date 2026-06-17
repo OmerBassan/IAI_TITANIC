@@ -17,7 +17,7 @@ Runnable two ways:
       train(epochs=200, device="cuda")
 
 All randomness is keyed off ``--seed`` (default 42) for reproducibility.
-Artifacts land in ``checkpoints/`` by default:
+Artifacts land in ``artifacts/`` by default (override with ``--out-dir``):
 
 * ``model.pt``        - best model weights + architecture hyper-params
 * ``preprocessor.joblib`` - the fitted preprocessing pipeline

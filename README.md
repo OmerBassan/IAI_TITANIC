@@ -25,9 +25,9 @@ ROC-AUC):
 | ROC-AUC   | 0.880 |
 
 Decision threshold tuned by macro-F1 search (0.56). Hyperparameters come from
-[best_params.json](best_params.json); full run config + metrics in
-[artifacts/metadata.json](artifacts/metadata.json). Regenerate with
-`python tuning.py` then `python train.py`.
+[best_params.json](best_params.json); the full run config + metrics are written
+to `artifacts/metadata.json` at train time (the `artifacts/` directory is
+gitignored — regenerate it with `python tuning.py` then `python train.py`).
 
 ## Project layout
 
@@ -132,7 +132,12 @@ Re-running `train.py` with the same seed reproduces the split and metrics above.
 
 ## EDA Insights
 
-Key findings from exploratory data analysis:
+The full exploratory analysis — distributions, missingness, correlations and
+survival rates by feature, each with written insights inline — lives in
+[notebooks/eda.ipynb](notebooks/eda.ipynb) (runs top-to-bottom; outputs are
+committed so it can be read on GitHub without re-running). The preprocessing and
+architecture choices in this repo trace directly back to its findings. Key
+takeaways:
 
 **Missing values:** Age (~ 19% missing) and Cabin (~ 77% missing); all other
 features present. Age is imputed via median; Cabin is dropped.
@@ -145,6 +150,8 @@ features present. Age is imputed via median; Cabin is dropped.
   1st class, ~75% in 2nd. Age <15 and family structure matter.
 - **Fare gradient**: Lower fares correlate with lower survival, but within each
   class the effect is subtle.
+
+Figures below are exported from [notebooks/eda.ipynb](notebooks/eda.ipynb):
 
 ![Missing-value map](docs/eda_missing.png)
 ![Age & Fare by survival](docs/eda_distributions.png)

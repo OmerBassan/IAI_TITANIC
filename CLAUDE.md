@@ -4,18 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This is an **early-stage** Titanic survival-prediction project. Most of it is not yet built. The only working code is `fetch_data.py`; everything else described below is the planned design from `workflow.md`. Treat `workflow.md` (written in Hebrew) as the authoritative project plan and check it before adding new components.
+This is a **complete, end-to-end** Titanic survival-prediction project. The full pipeline is built and runnable: Kaggle fetch (`fetch_data.py`), EDA (`notebooks/eda.ipynb`), shared preprocessing/evaluation modules (`src/`), the PyTorch model (`src/model.py`), training (`train.py`), hyperparameter tuning (`tuning.py`), and the Streamlit inference app (`ds_app.py`). The "brick by brick" plan below records the design intent each piece was built against.
 
 The graded goal emphasizes **creativity and use of AI**, not just a working model — design choices should reflect that (see "Architecture intent" below).
 
 ## Commands
 
 ```bash
-pip install -r requirements.txt   # full stack: torch, pandas, scikit-learn, kaggle, streamlit, jupyter
+pip install -r requirements.txt   # full stack: torch, optuna, pandas, scikit-learn, kaggle, streamlit, jupyter
 python fetch_data.py              # downloads data/train.csv from Kaggle (idempotent — skips if present)
+python tuning.py                  # (optional) Optuna search -> writes best_params.json
+python train.py                   # load -> split -> preprocess -> train -> save artifacts/ + print val metrics
+streamlit run ds_app.py           # inference UI (loads artifacts/ written by train.py)
 ```
 
-There is no test suite, linter, or `train.py`/`ds_app.py` entry point yet (those are later bricks).
+There is no automated test suite or linter; each module has a `__main__` smoke-test block (e.g. `python -m src.model`) used to verify it in isolation.
 
 ## Data
 
