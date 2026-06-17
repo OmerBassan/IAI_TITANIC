@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Kaggle credentials (never commit)
+kaggle.json
+.kaggle/
+
+# Data: ignore full datasets, keep the committed sample
+data/*.csv
+!data/sample.csv
+
+# Model artifacts
+models/
+checkpoints/
+artifacts/
+*.pt
+*.npz
+*.pth
+*.joblib
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
