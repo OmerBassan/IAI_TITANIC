@@ -53,7 +53,7 @@ reads from). Override with `--out-dir <path>`.
 
 ```bash
 # 1. Clone
-git clone <your-repo-url>
+git clone https://github.com/OmerBassan/IAI_TITANIC.git
 cd IAI_TITANIC
 
 # 2. Create + activate a virtualenv
