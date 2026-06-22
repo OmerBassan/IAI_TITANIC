@@ -60,14 +60,43 @@ class TrainConfig:
     patience: int = 8
     batch_size: int = 2048          # large batches: 283k rows, CPU-friendly throughput
     lr: float = 1e-3
-    weight_decay: float = 1e-5      # light L2; plenty of data, less overfit risk
+    weight_decay: float = 1e-4      # stronger L2: the 599:1 run overfit (val_loss diverged)
     hidden_dim: int = 128
-    n_blocks: int = 3
-    dropout: float = 0.3
+    n_blocks: int = 2               # 3 blocks memorised the 378 train frauds; 2 generalises
+    dropout: float = 0.4
+    # pos_weight for BCEWithLogitsLoss. None -> sqrt(n_neg/n_pos) (~24.5): a far
+    # gentler reweighting than the raw 599:1 ratio, which inflated logits (exp
+    # overflow), pinned the decision threshold at ~0.996 and hurt PR-AUC. Pass a
+    # float to override (e.g. the value found by tuning_fraud.py).
+    pos_weight: float | None = None
     val_size: float = 0.10
     test_size: float = 0.10
     seed: int = 42
     device: str = "auto"
+
+
+_TUNABLE_KEYS = ("lr", "dropout", "batch_size", "hidden_dim", "n_blocks",
+                 "weight_decay", "pos_weight")
+
+
+def load_best_params(path: str | Path = "fraud_best_params.json") -> dict[str, object]:
+    """Load tuned hyperparameters written by ``tuning_fraud.py``, if present.
+
+    A missing file is not an error — training falls back to the
+    :class:`TrainConfig` defaults. Only keys the study actually searches
+    (:data:`_TUNABLE_KEYS`) are returned, so a stray field can never silently
+    change unrelated behaviour.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"[warn] could not read {path} ({exc}); using default hyperparameters.")
+        return {}
+    params = payload.get("best_params", payload)
+    return {k: params[k] for k in _TUNABLE_KEYS if k in params}
 
 
 def set_seed(seed: int) -> None:
@@ -113,7 +142,10 @@ def _evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module,
 
     logits = torch.cat(logits_all).numpy()
     y_true = torch.cat(y_all).numpy()
-    proba = 1.0 / (1.0 + np.exp(-logits))
+    # Clip before exp: large positive logits (common under heavy pos_weight)
+    # otherwise overflow np.exp and spam RuntimeWarnings. sigmoid saturates
+    # anyway, so clipping at ±30 is numerically exact to float precision.
+    proba = 1.0 / (1.0 + np.exp(-np.clip(logits, -30.0, 30.0)))
 
     if threshold is None:
         threshold, _ = find_best_threshold(y_true, proba)
@@ -157,7 +189,10 @@ def train(**overrides: object) -> dict[str, object]:
         n_blocks=cfg.n_blocks,
         dropout=cfg.dropout,
     ).to(device)
-    pos_weight = torch.tensor([compute_pos_weight(train_df["Class"])], device=device)
+    # Gentle reweighting: sqrt of the raw imbalance ratio unless overridden.
+    base_pos_weight = compute_pos_weight(train_df["Class"])
+    pw_value = cfg.pos_weight if cfg.pos_weight is not None else base_pos_weight ** 0.5
+    pos_weight = torch.tensor([pw_value], device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
@@ -226,7 +261,9 @@ def train(**overrides: object) -> dict[str, object]:
                 break
 
     # --- final test evaluation with the BEST model + frozen val threshold ---
-    ckpt = torch.load(ckpt_path)
+    # weights_only=False: the checkpoint stores a dict (arch + threshold), not
+    # just tensors, so it must use the full unpickler (we wrote the file ourselves).
+    ckpt = torch.load(ckpt_path, weights_only=False)
     model.load_state_dict(ckpt["state_dict"])
     test_metrics = _evaluate(model, test_loader, criterion, device, threshold=best_thresh)
 
@@ -258,17 +295,26 @@ def train(**overrides: object) -> dict[str, object]:
 
 
 def _parse_args() -> TrainConfig:
+    # Precedence: explicit CLI flag > fraud_best_params.json > TrainConfig default.
+    # Tuned values become the argparse defaults, so an un-passed flag picks them
+    # up while a passed flag still overrides.
+    tuned = load_best_params()
+    if tuned:
+        print(f"[params] loaded tuned hyperparameters from fraud_best_params.json: {tuned}")
+    d = lambda key: tuned.get(key, getattr(TrainConfig, key))  # noqa: E731
+
     p = argparse.ArgumentParser(description="Train the credit-card fraud model.")
     p.add_argument("--data-path", default=TrainConfig.data_path)
     p.add_argument("--out-dir", default=TrainConfig.out_dir)
     p.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     p.add_argument("--patience", type=int, default=TrainConfig.patience)
-    p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    p.add_argument("--lr", type=float, default=TrainConfig.lr)
-    p.add_argument("--weight-decay", type=float, default=TrainConfig.weight_decay)
-    p.add_argument("--hidden-dim", type=int, default=TrainConfig.hidden_dim)
-    p.add_argument("--n-blocks", type=int, default=TrainConfig.n_blocks)
-    p.add_argument("--dropout", type=float, default=TrainConfig.dropout)
+    p.add_argument("--batch-size", type=int, default=d("batch_size"))
+    p.add_argument("--lr", type=float, default=d("lr"))
+    p.add_argument("--weight-decay", type=float, default=d("weight_decay"))
+    p.add_argument("--hidden-dim", type=int, default=d("hidden_dim"))
+    p.add_argument("--n-blocks", type=int, default=d("n_blocks"))
+    p.add_argument("--dropout", type=float, default=d("dropout"))
+    p.add_argument("--pos-weight", type=float, default=d("pos_weight"))
     p.add_argument("--val-size", type=float, default=TrainConfig.val_size)
     p.add_argument("--test-size", type=float, default=TrainConfig.test_size)
     p.add_argument("--seed", type=int, default=TrainConfig.seed)
